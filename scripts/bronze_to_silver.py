@@ -174,7 +174,7 @@ def main():
     print(f"[INFO] Cleaning silver dataframe")
     df_silver = clean_df_silver(df_silver)
 
-    silver_key = f"{SILVER_PREFIX}/{SILVER_FILENAME}"
+    silver_key = f"{SILVER_PREFIX}/season={SEASON}/{SILVER_FILENAME}"
     upload_parquet_df(bucket, df_silver, silver_key)
 
 if __name__ == "__main__":
