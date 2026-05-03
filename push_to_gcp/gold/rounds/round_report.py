@@ -15,42 +15,6 @@ SILVER_FILENAME = os.getenv("SILVER_FILENAME", "").strip()
 
 SILVER_FILEPATH = f"{SILVER_PREFIX}/season={SEASON}/{SILVER_FILENAME}"
 
-
-def list_silver_parquet_blobs(bucket, season: int):
-    """All Parquet objects under SILVER_PREFIX/season={season}/."""
-    base = SILVER_PREFIX.strip().strip("/")
-    prefix = f"{base}/season={season}/"
-    blobs = list(bucket.list_blobs(prefix=prefix))
-    return sorted(
-        (b for b in blobs if b.name.endswith(".parquet")),
-        key=lambda x: x.name,
-    )
-
-
-def load_silver_dataframe(bucket):
-    """
-    Read every .parquet under the season prefix (multiple files).
-    If none exist, fall back to a single SILVER_FILEPATH (legacy one-file layout).
-    """
-    blobs = list_silver_parquet_blobs(bucket, SEASON)
-    if blobs:
-        dfs = []
-        for b in blobs:
-            print(f"[INFO] Reading silver: {b.name}")
-            dfs.append(pd.read_parquet(BytesIO(b.download_as_bytes())))
-        return pd.concat(dfs, ignore_index=True)
-    if SILVER_FILENAME:
-        print(
-            f"[INFO] No parquet under season prefix; using single file: {SILVER_FILEPATH}"
-        )
-        bl = bucket.blob(SILVER_FILEPATH.strip("/"))
-        return pd.read_parquet(BytesIO(bl.download_as_bytes()))
-    raise ValueError(
-        f"No .parquet under gs://{GCS_BUCKET}/{SILVER_PREFIX}/season={SEASON}/ "
-        "and SILVER_FILENAME is empty."
-    )
-
-
 POINTS_RACE = {
     1: 25,
     2: 18,
@@ -77,13 +41,10 @@ POINTS_SPRINT = {
 
 print("[INFO] Initializing GCS")
 client = storage.Client()
-bucket = client.bucket(GCS_BUCKET)
+blob = client.bucket(GCS_BUCKET).blob(SILVER_FILEPATH)
 
-print(
-    "[INFO] Initializing dataframe (all silver .parquet for season, or single file fallback)"
-)
-df = load_silver_dataframe(bucket)
-
+print("[INFO] Initializing dataframe")
+df = pd.read_parquet(BytesIO(blob.download_as_bytes()))
 columns_to_drop = [
     "Stint",
     "PitOutTime",
@@ -111,7 +72,6 @@ columns_to_drop = [
     "is_position_not_na",
     "IsPersonalBest",
 ]
-
 
 # FUNCTIONS
 def filter_column_for_driver(keys, data):
@@ -149,8 +109,6 @@ def insert_driver(overall, one):
     stub["round_number"] = one["round_number"].iloc[0]
     stub["event_name"] = one["event_name"].iloc[0]
     stub["LapNumber"] = 0
-    if "session_type" in one.columns:
-        stub["session_type"] = one["session_type"].iloc[0]
 
     return pd.concat([one.reset_index(drop=True), stub], ignore_index=True)
 
@@ -163,24 +121,10 @@ def assign_points(position, session_type: str):
         table = POINTS_SPRINT
     return position.map(table).fillna(0).astype(int)
 
-
 print("[INFO] Dropping Unneeded Columns")
 df = df.drop(columns=columns_to_drop, errors="coerce")
 
-if "session_type" not in df.columns:
-    df["session_type"] = "R"
 df["session_type"] = df["session_type"].astype(str).str.strip().str.upper()
-df.loc[~df["session_type"].isin(["R", "S"]), "session_type"] = "R"
-
-_dedupe_cols = [
-    c
-    for c in ("season", "round_number", "session_type", "Driver", "LapNumber")
-    if c in df.columns
-]
-if len(_dedupe_cols) >= 3:
-    before = len(df)
-    df = df.drop_duplicates(subset=_dedupe_cols, ignore_index=True)
-    print(f"[INFO] Deduped rows: {before} -> {len(df)} on {_dedupe_cols}")
 
 round_session_pairs = (
     df[["round_number", "session_type"]]
@@ -251,7 +195,7 @@ for _, pair in round_session_pairs.iterrows():
     report.to_json(buf_json, orient="records", index=False)
     buf_parq.seek(0)
     buf_json.seek(0)
-
+    bucket = client.bucket(GCS_BUCKET)
     report_slug = "report" if session_type == "R" else "sprint_report"
     prefix = f"gold/season={SEASON}/round={r:02d}/{report_slug}"
     bucket.blob(f"{prefix}.parquet").upload_from_file(

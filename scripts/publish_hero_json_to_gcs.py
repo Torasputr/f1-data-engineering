@@ -34,7 +34,9 @@ def _gold_path() -> str:
     return f"gold/season={SEASON}"
 
 
-def _load_standings_from_gcs(client: storage.Client, bucket: storage.Bucket) -> pd.DataFrame:
+def _load_standings_from_gcs(
+    client: storage.Client, bucket: storage.Bucket
+) -> pd.DataFrame:
     gold = _gold_path()
     stan_key = f"{gold}/standings.parquet"
     stan_blob = bucket.blob(stan_key)
